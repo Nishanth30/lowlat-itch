@@ -35,7 +35,8 @@ struct SpscIndices<false> {
 
 }  // namespace detail
 
-// Bounded single-producer/single-consumer ring buffer. Wait-free push/pop.
+// Bounded single-producer/single-consumer ring buffer. Lock-free: push/pop are
+// non-blocking and return false when full/empty (callers spin or back off).
 //  - producer: relaxed load of own tail, acquire load of head (only when the
 //    cached copy says "full"), release store of tail after the slot write.
 //  - consumer: mirror image.

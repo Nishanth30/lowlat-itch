@@ -68,6 +68,7 @@ struct Result {
     LatencyStats lat;
     uint64_t checksum = 0;
     EngineStats st;
+    bool overflow = false;  // queue full in fail-fast mode: run aborted
 };
 
 template <class E>
@@ -109,7 +110,7 @@ Result run_single(const char* name, const File& f, const Scan& sc, size_t max_or
 
 template <class E>
 Result run_pipeline(const char* name, const File& f, const Scan& sc, size_t max_orders, uint64_t rate,
-                    int pc, int cc, std::string* pins) {
+                    bool fail_on_full, int pc, int cc, std::string* pins) {
     Result r;
     r.book = name; r.mode = "pipeline";
     auto eng = std::make_unique<E>(max_orders);
@@ -119,6 +120,7 @@ Result run_pipeline(const char* name, const File& f, const Scan& sc, size_t max_
     std::atomic<bool> go{false};
     uint64_t t_begin = 0, t_end = 0, h = kFoldInit;
     size_t got = 0;
+    bool overflow = false;
     std::string cpin, ppin;
 
     std::thread cons([&] {
@@ -144,6 +146,7 @@ Result run_pipeline(const char* name, const File& f, const Scan& sc, size_t max_
         t_begin = Clock::now();
         Slot s{};
         itch::for_each_frame(f.data, f.size, [&](const uint8_t* p, size_t len, size_t i) {
+            if (overflow) return;  // fail-fast: stop feeding after the first overflow
             if (interval) {
                 uint64_t target = t_begin + i * interval;
                 while (Clock::now() < target) cpu_relax();
@@ -151,8 +154,13 @@ Result run_pipeline(const char* name, const File& f, const Scan& sc, size_t max_
             } else {
                 s.t0 = Clock::now();
             }
-            if (itch::parse(p, len, s.e) == itch::Parse::Event)
-                while (!q->push(s)) cpu_relax();
+            if (itch::parse(p, len, s.e) == itch::Parse::Event) {
+                if (fail_on_full) {
+                    if (!q->push(s)) overflow = true;  // fault, not backpressure
+                } else {
+                    while (!q->push(s)) cpu_relax();
+                }
+            }
         });
         Slot end{};
         end.e.type = 0;
@@ -170,6 +178,7 @@ Result run_pipeline(const char* name, const File& f, const Scan& sc, size_t max_
     r.lat = summarize(lat, got / 50);
     r.checksum = h;
     r.st = eng->stats();
+    r.overflow = overflow;
     return r;
 }
 
@@ -181,6 +190,7 @@ Result median_of(std::vector<Result>& v) {
         mm.push_back(r.mmsg_s); ns.push_back(r.ns_per_msg);
     }
     Result o = v[0];
+    for (auto& r : v) o.overflow |= r.overflow;
     o.lat.p50 = (uint64_t)median(a); o.lat.p99 = (uint64_t)median(b); o.lat.p999 = (uint64_t)median(c);
     o.lat.p9999 = (uint64_t)median(d); o.lat.max = (uint64_t)median(e); o.lat.mean = median(g);
     o.mmsg_s = median(mm); o.ns_per_msg = median(ns);
@@ -197,6 +207,10 @@ int main(int argc, char** argv) {
     int reps = cli::i32(argc, argv, "--reps", 3);
     size_t max_orders = cli::u64(argc, argv, "--max-orders", 1u << 22);
     std::string json = cli::str(argc, argv, "--json", "");
+    // Paced runs treat a full queue as a fault (production behaviour); unpaced runs are a
+    // throughput test and rely on backpressure. Override with --on-full spin|fail.
+    std::string on_full = cli::str(argc, argv, "--on-full", rate ? "fail" : "spin");
+    bool fail_on_full = on_full == "fail";
 #if defined(__linux__)
     int pc = cli::i32(argc, argv, "--prod-core", num_cpus() >= 4 ? 2 : -1);
     int cc = cli::i32(argc, argv, "--cons-core", num_cpus() >= 4 ? 3 : -1);
@@ -227,7 +241,7 @@ int main(int argc, char** argv) {
         }
         if (mode == "pipeline" || mode == "both") {
             std::vector<Result> v;
-            for (int i = 0; i < reps; ++i) v.push_back(run_pipeline<E>(name, f, sc, max_orders, rate, pc, cc, &pins));
+            for (int i = 0; i < reps; ++i) v.push_back(run_pipeline<E>(name, f, sc, max_orders, rate, fail_on_full, pc, cc, &pins));
             out.push_back(median_of(v));
         }
     };
@@ -239,19 +253,23 @@ int main(int argc, char** argv) {
 
     std::printf("\n%-10s %-9s %9s %8s %8s %9s %10s %11s %9s  %s\n", "book", "mode", "ns/msg", "p50 ns", "p99 ns",
                 "p99.9 ns", "p99.99 ns", "max ns", "Mmsg/s", "checksum");
-    bool mismatch = false;
+    bool mismatch = false, overflowed = false;
     for (auto& r : out) {
+        if (r.overflow) overflowed = true;
         std::printf("%-10s %-9s %9.1f %8llu %8llu %9llu %10llu %11llu %9.2f  %016llx\n", r.book.c_str(),
                     r.mode.c_str(), r.ns_per_msg, (unsigned long long)r.lat.p50, (unsigned long long)r.lat.p99,
                     (unsigned long long)r.lat.p999, (unsigned long long)r.lat.p9999, (unsigned long long)r.lat.max,
                     r.mmsg_s, (unsigned long long)r.checksum);
-        if (r.checksum != out[0].checksum) mismatch = true;
+        if (r.checksum != out[0].checksum && !r.overflow) mismatch = true;
     }
     std::printf("# applied=%llu unknown_ref=%llu rejected=%llu | checksums %s\n",
                 out.empty() ? 0ull : (unsigned long long)out[0].st.applied,
                 out.empty() ? 0ull : (unsigned long long)out[0].st.unknown_ref,
                 out.empty() ? 0ull : (unsigned long long)out[0].st.rejected,
                 mismatch ? "MISMATCH (BUG)" : "all equal");
+
+    if (overflowed)
+        std::printf("# QUEUE OVERFLOW (--on-full fail): run aborted at first full queue; latency/checksum not valid\n");
 
     if (!json.empty()) {
         FILE* jf = std::fopen(json.c_str(), "w");
@@ -271,5 +289,5 @@ int main(int argc, char** argv) {
         std::fprintf(jf, "]}\n");
         std::fclose(jf);
     }
-    return mismatch ? 2 : 0;
+    return overflowed ? 3 : (mismatch ? 2 : 0);
 }

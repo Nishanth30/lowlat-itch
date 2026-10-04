@@ -1,6 +1,6 @@
 # lowlat-itch
 
-**A low-latency market-data pipeline in C++20: NASDAQ ITCH 5.0 decoding, a lock-free handoff queue, and a limit order book that updates in under 30 ns per message.**
+**A low-latency market-data pipeline in C++20: NASDAQ ITCH 5.0 decoding, a wait-free handoff queue, and a limit order book that updates in under 30 ns per message.**
 
 When an exchange publishes a trade or a quote, trading firms race to react. The software that receives the feed, decodes
 it and keeps an up-to-date picture of every order in the market (the *order book*) sits on the critical path of every
@@ -19,17 +19,17 @@ by tail percentiles (p99, p99.9) rather than averages.
 
 Pinned to separate cores on Linux (Ubuntu 24.04, aarch64, Docker VM); macOS (Apple M5) shown where noted.
 
-### Handoff between threads: lock-free queue vs. mutex
+### Handoff between threads: wait-free queue vs. mutex
 
 1 M messages/s, latency from intended send to receive, median of 5 runs.
 
 | Queue | p50 | p99 | p99.9 | Throughput |
 |---|---|---|---|---|
-| **Lock-free SPSC ring buffer** | **83 ns** | **1.9 µs** | 13.7 µs | **18.6 M msg/s** |
+| **Wait-free SPSC ring buffer** | **83 ns** | **1.9 µs** | 13.7 µs | **18.6 M msg/s** |
 | `std::mutex` + `std::queue` (polling) | 583 ns | 10.8 µs | 53.5 µs | 6.4 M msg/s |
 | `std::mutex` + condition variable | 3.2 µs | 12.8 µs | 48.0 µs | 6.5 M msg/s |
 
-The lock-free queue has a median 7–38× lower, p99 about 6× lower, and about 3× the throughput.
+The wait-free queue has a median 7–38× lower, p99 about 6× lower, and about 3× the throughput.
 
 ### Order book: what each design choice buys
 
@@ -53,12 +53,18 @@ Full tables for both machines: [results/REPORT_linux-docker.md](results/REPORT_l
 
 ## What is in here
 
-**Lock-free SPSC ring buffer** ([spsc_queue.hpp](include/ll/spsc_queue.hpp)). Wait-free push and pop over a
-power-of-two ring with free-running indices. The producer owns `tail`, the consumer owns `head`; a release store
+**Wait-free SPSC ring buffer** ([spsc_queue.hpp](include/ll/spsc_queue.hpp)). `push` and `pop` each complete in a
+bounded number of steps (no loops, CAS retries, locks or syscalls) and return immediately when the queue is full or
+empty, over a power-of-two ring with free-running indices. The producer owns `tail`, the consumer owns `head`; a release store
 publishes each slot and an acquire load observes it. Each side keeps a cached copy of the other's index so the shared
 cache line is touched only when the queue looks full or empty. Producer and consumer words can be placed on separate
 cache lines or packed together, to measure false sharing directly. The cache-line size is platform-aware (128 B on
 Apple Silicon, 64 B elsewhere).
+
+**Full-queue policy.** The ring is bounded, so a full queue is a decision, not a hidden wait. The pipeline's default
+for paced (real-time) replay is *fail-fast*: the first overflow is counted, the run aborts with a distinct exit code and
+nothing is dropped silently, matching how a production feed handler would raise a fault or trip a kill-switch rather
+than corrupt the book. Unpaced throughput runs use backpressure (`--on-full spin`).
 
 **ITCH 5.0 decoder** ([itch.hpp](include/ll/itch.hpp)). Zero-copy, big-endian decoding of the messages that change the
 book (Add, Add-with-MPID, Execute, Execute-with-price, Cancel, Delete, Replace) with length-prefixed framing identical
