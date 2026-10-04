@@ -1,0 +1,33 @@
+cmake_minimum_required(VERSION 3.16)
+project(lowlat_itch CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+
+option(LL_NATIVE "Tune for the build host (x86 -march=native)" ON)
+add_compile_options(-Wall -Wextra -fno-omit-frame-pointer)
+if(LL_NATIVE AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+  add_compile_options(-march=native)
+endif()
+
+find_package(Threads REQUIRED)
+add_library(ll INTERFACE)
+target_include_directories(ll INTERFACE include)
+target_link_libraries(ll INTERFACE Threads::Threads)
+
+add_executable(bench_queue src/bench_queue.cpp)
+target_link_libraries(bench_queue ll)
+add_executable(gen_itch src/gen_itch.cpp)
+target_link_libraries(gen_itch ll)
+add_executable(itch_pipeline src/itch_pipeline.cpp)
+target_link_libraries(itch_pipeline ll)
+
+enable_testing()
+add_executable(run_tests tests/test_main.cpp)
+target_link_libraries(run_tests ll)
+add_test(NAME all COMMAND run_tests)
