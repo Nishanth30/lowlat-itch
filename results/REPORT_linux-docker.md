@@ -5,7 +5,6 @@ Paced 1,000,000 msg/s, 2,000,000 msgs, median of 5 reps; cache line 64 B; clock 
 | variant | p50 ns | p99 ns | p99.9 ns | p99.99 ns | max ns | Mmsg/s (unpaced) |
 |---|---|---|---|---|---|---|
 | spsc-padded | 83 | 1917 | 13709 | 38667 | 59709 | 18.62 |
-| spsc-unpadded | 125 | 1917 | 15875 | 41542 | 131375 | 20.33 |
 | mutex-poll | 583 | 10833 | 53500 | 179917 | 296958 | 6.37 |
 | mutex-condvar | 3208 | 12750 | 48000 | 189500 | 319792 | 6.52 |
 
