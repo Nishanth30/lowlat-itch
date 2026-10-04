@@ -10,7 +10,7 @@ by tail percentiles (p99, p99.9) rather than averages.
 
 ```
  ITCH 5.0 feed          parse                 handoff                  book update
- (file / replay) ──►  zero-copy decode ──►  lock-free SPSC queue ──►  limit order book ──► best bid / ask
+ (file / replay) ──►  zero-copy decode ──►  wait-free SPSC queue ──►  limit order book ──► best bid / ask
                       reader thread          acquire/release           book thread
                       (core A)               no locks, no syscalls     (core B)
 ```
