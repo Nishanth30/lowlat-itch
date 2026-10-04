@@ -99,8 +99,6 @@ that all four book implementations agree.
   framing and can replay NASDAQ sample files directly.
 - Linux numbers come from a Docker VM with pinned cores and a 41.67 ns clock tick; macOS has no hard thread pinning.
   Tail percentiles on bare metal with isolated cores will be tighter.
-- On these machines, padding the queue's indices did not produce a clear speed-up: with cached index copies the
-  cross-core traffic is already low. The ablation is built in for measuring it on other hardware.
 - Out of scope: kernel-bypass networking (DPDK/RDMA), FPGA offload, order-entry protocols (OUCH/FIX), exchange-specific
   feeds (NSE/BSE).
 
